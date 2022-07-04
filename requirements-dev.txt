@@ -30,3 +30,4 @@ scikit-quant<=0.7;platform_system != 'Windows'
 jax;platform_system != 'Windows'
 jaxlib;platform_system != 'Windows'
 docplex
+mistune>=2.0.3 # not directly required, pinned by Snyk to avoid a vulnerability
