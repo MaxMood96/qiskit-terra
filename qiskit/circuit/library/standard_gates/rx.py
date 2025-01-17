@@ -12,6 +12,8 @@
 
 """Rotation around the X axis."""
 
+from __future__ import annotations
+
 import math
 from math import pi
 from typing import Optional, Union
@@ -21,6 +23,7 @@ from qiskit.circuit.controlledgate import ControlledGate
 from qiskit.circuit.gate import Gate
 from qiskit.circuit.quantumregister import QuantumRegister
 from qiskit.circuit.parameterexpression import ParameterValueType
+from qiskit._accelerate.circuit import StandardGate
 
 
 class RXGate(Gate):
@@ -31,7 +34,7 @@ class RXGate(Gate):
 
     **Circuit symbol:**
 
-    .. parsed-literal::
+    .. code-block:: text
 
              ┌───────┐
         q_0: ┤ Rx(ϴ) ├
@@ -49,6 +52,8 @@ class RXGate(Gate):
                 -i\sin\left(\rotationangle\right) & \cos\left(\rotationangle\right)
             \end{pmatrix}
     """
+
+    _standard_gate = StandardGate.RXGate
 
     def __init__(
         self, theta: ParameterValueType, label: Optional[str] = None, *, duration=None, unit="dt"
@@ -75,9 +80,9 @@ class RXGate(Gate):
     def control(
         self,
         num_ctrl_qubits: int = 1,
-        label: Optional[str] = None,
-        ctrl_state: Optional[Union[str, int]] = None,
-        annotated: bool = False,
+        label: str | None = None,
+        ctrl_state: str | int | None = None,
+        annotated: bool | None = None,
     ):
         """Return a (multi-)controlled-RX gate.
 
@@ -86,12 +91,15 @@ class RXGate(Gate):
             label: An optional label for the gate [Default: ``None``]
             ctrl_state: control state expressed as integer,
                 string (e.g.``'110'``), or ``None``. If ``None``, use all 1s.
-            annotated: indicates whether the controlled gate can be implemented
-                as an annotated gate.
+            annotated: indicates whether the controlled gate should be implemented
+                as an annotated gate. If ``None``, this is set to ``True`` if
+                the gate contains free parameters and more than one control qubit, in which
+                case it cannot yet be synthesized. Otherwise it is set to ``False``.
 
         Returns:
             ControlledGate: controlled version of this gate.
         """
+        # deliberately capture annotated in [None, False] here
         if not annotated and num_ctrl_qubits == 1:
             gate = CRXGate(self.params[0], label=label, ctrl_state=ctrl_state)
             gate.base_gate.label = self.label
@@ -120,14 +128,15 @@ class RXGate(Gate):
         """
         return RXGate(-self.params[0])
 
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=None):
         """Return a numpy.array for the RX gate."""
+        if copy is False:
+            raise ValueError("unable to avoid copy while creating an array as requested")
         cos = math.cos(self.params[0] / 2)
         sin = math.sin(self.params[0] / 2)
         return numpy.array([[cos, -1j * sin], [-1j * sin, cos]], dtype=dtype)
 
-    def power(self, exponent: float):
-        """Raise gate to a power."""
+    def power(self, exponent: float, annotated: bool = False):
         (theta,) = self.params
         return RXGate(exponent * theta)
 
@@ -145,7 +154,7 @@ class CRXGate(ControlledGate):
 
     **Circuit symbol:**
 
-    .. parsed-literal::
+    .. code-block:: text
 
         q_0: ────■────
              ┌───┴───┐
@@ -175,7 +184,8 @@ class CRXGate(ControlledGate):
         which in our case would be q_1. Thus a textbook matrix for this
         gate will be:
 
-        .. parsed-literal::
+        .. code-block:: text
+
                  ┌───────┐
             q_0: ┤ Rx(ϴ) ├
                  └───┬───┘
@@ -194,6 +204,8 @@ class CRXGate(ControlledGate):
                     0 & 0 & -i\sin\left(\rotationangle\right) & \cos\left(\rotationangle\right)
                 \end{pmatrix}
     """
+
+    _standard_gate = StandardGate.CRXGate
 
     def __init__(
         self,
@@ -264,8 +276,10 @@ class CRXGate(ControlledGate):
         """
         return CRXGate(-self.params[0], ctrl_state=self.ctrl_state)
 
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=None):
         """Return a numpy.array for the CRX gate."""
+        if copy is False:
+            raise ValueError("unable to avoid copy while creating an array as requested")
         half_theta = float(self.params[0]) / 2
         cos = math.cos(half_theta)
         isin = 1j * math.sin(half_theta)

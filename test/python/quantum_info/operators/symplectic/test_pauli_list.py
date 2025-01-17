@@ -33,6 +33,7 @@ from qiskit.circuit.library import (
     XGate,
     YGate,
     ZGate,
+    ECRGate,
 )
 from qiskit.quantum_info.operators import (
     Clifford,
@@ -1559,6 +1560,15 @@ class TestPauliListMethods(QiskitTestCase):
                 value1 = pauli.insert(1, insert)
                 self.assertEqual(value1, target1)
 
+        # Insert single column to length-1 PauliList:
+        with self.subTest(msg="length-1, single-column, single-val"):
+            pauli = PauliList(["X"])
+            insert = PauliList(["Y"])
+            target0 = PauliList(["YX"])
+            value0 = pauli.insert(1, insert, qubit=True)
+            self.assertEqual(value0, target0)
+            self.assertEqual(value0.phase.shape, (1,))
+
         # Insert single column
         pauli = PauliList(["X", "Y", "Z", "-iI"])
         for i in ["I", "X", "Y", "Z", "iY"]:
@@ -1997,10 +2007,12 @@ class TestPauliListMethods(QiskitTestCase):
             CYGate(),
             CZGate(),
             SwapGate(),
+            ECRGate(),
             Clifford(CXGate()),
             Clifford(CYGate()),
             Clifford(CZGate()),
             Clifford(SwapGate()),
+            Clifford(ECRGate()),
         )
     )
     def test_evolve_clifford2(self, gate):
@@ -2033,6 +2045,7 @@ class TestPauliListMethods(QiskitTestCase):
             CYGate(),
             CZGate(),
             SwapGate(),
+            ECRGate(),
         )
         dtypes = [
             int,
@@ -2115,7 +2128,7 @@ class TestPauliListMethods(QiskitTestCase):
         pauli_list = PauliList(input_labels)
         groups = pauli_list.group_qubit_wise_commuting()
 
-        # checking that every input Pauli in pauli_list is in a group in the ouput
+        # checking that every input Pauli in pauli_list is in a group in the output
         output_labels = [pauli.to_label() for group in groups for pauli in group]
         self.assertListEqual(sorted(output_labels), sorted(input_labels))
 
@@ -2149,7 +2162,7 @@ class TestPauliListMethods(QiskitTestCase):
         #  if qubit_wise=True, equivalent to test_group_qubit_wise_commuting
         groups = pauli_list.group_commuting(qubit_wise=False)
 
-        # checking that every input Pauli in pauli_list is in a group in the ouput
+        # checking that every input Pauli in pauli_list is in a group in the output
         output_labels = [pauli.to_label() for group in groups for pauli in group]
         self.assertListEqual(sorted(output_labels), sorted(input_labels))
         # Within each group, every operator commutes with every other operator.

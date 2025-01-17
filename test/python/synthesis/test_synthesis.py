@@ -23,7 +23,9 @@ import scipy.stats
 from ddt import ddt, data
 
 from qiskit import QiskitError, transpile
-from qiskit.circuit import QuantumCircuit, QuantumRegister
+from qiskit.dagcircuit.dagcircuit import DAGCircuit
+from qiskit.circuit import QuantumCircuit, QuantumRegister, Gate
+from qiskit.circuit.parameterexpression import ParameterValueType
 from qiskit.converters import dag_to_circuit, circuit_to_dag
 from qiskit.circuit.library import (
     HGate,
@@ -46,6 +48,8 @@ from qiskit.circuit.library import (
     RZXGate,
     CPhaseGate,
     CRZGate,
+    CRXGate,
+    CRYGate,
     RXGate,
     RYGate,
     RZGate,
@@ -56,23 +60,14 @@ from qiskit.quantum_info.random import random_unitary
 from qiskit.synthesis.one_qubit.one_qubit_decompose import OneQubitEulerDecomposer
 from qiskit.synthesis.two_qubit.two_qubit_decompose import (
     TwoQubitWeylDecomposition,
-    TwoQubitWeylIdEquiv,
-    TwoQubitWeylSWAPEquiv,
-    TwoQubitWeylPartialSWAPEquiv,
-    TwoQubitWeylPartialSWAPFlipEquiv,
-    TwoQubitWeylfSimaabEquiv,
-    TwoQubitWeylfSimabbEquiv,
-    TwoQubitWeylfSimabmbEquiv,
-    TwoQubitWeylControlledEquiv,
-    TwoQubitWeylMirrorControlledEquiv,
-    TwoQubitWeylGeneral,
     two_qubit_cnot_decompose,
     TwoQubitBasisDecomposer,
     TwoQubitControlledUDecomposer,
-    Ud,
     decompose_two_qubit_product_gate,
-    TwoQubitDecomposeUpToDiagonal,
 )
+from qiskit._accelerate.two_qubit_decompose import two_qubit_decompose_up_to_diagonal
+from qiskit._accelerate.two_qubit_decompose import Specialization
+from qiskit._accelerate.two_qubit_decompose import Ud
 from qiskit.synthesis.unitary import qsd
 from test import combine  # pylint: disable=wrong-import-order
 from test import QiskitTestCase  # pylint: disable=wrong-import-order
@@ -146,13 +141,13 @@ class CheckDecompositions(QiskitTestCase):
         """Context manager, asserts log is emitted at level DEBUG but no higher"""
         with self.assertLogs("qiskit.synthesis", "DEBUG") as ctx:
             yield
-        for i in range(len(ctx.records)):
+        for i, record in enumerate(ctx.records):
             self.assertLessEqual(
-                ctx.records[i].levelno,
+                record.levelno,
                 logging.DEBUG,
                 msg=f"Unexpected logging entry: {ctx.output[i]}",
             )
-            self.assertIn("Requested fidelity:", ctx.records[i].getMessage())
+            self.assertIn("Requested fidelity:", record.getMessage())
 
     def assertRoundTrip(self, weyl1: TwoQubitWeylDecomposition):
         """Fail if eval(repr(weyl1)) not equal to weyl1"""
@@ -227,10 +222,18 @@ class CheckDecompositions(QiskitTestCase):
     ):
         """Check that the two qubit Weyl decomposition gets specialized as expected"""
 
-        # Loop to check both for implicit and explicity specialization
+        # Loop to check both for implicit and explicitly specialization
         for decomposer in (TwoQubitWeylDecomposition, expected_specialization):
-            with self.assertDebugOnly():
-                decomp = decomposer(target_unitary, fidelity=fidelity)
+            if isinstance(decomposer, TwoQubitWeylDecomposition):
+                with self.assertDebugOnly():
+                    decomp = decomposer(target_unitary, fidelity=fidelity)
+                decomp_name = decomp.specialization
+            else:
+                with self.assertDebugOnly():
+                    decomp = TwoQubitWeylDecomposition(
+                        target_unitary, fidelity=None, _specialization=expected_specialization
+                    )
+                decomp_name = expected_specialization
             self.assertRoundTrip(decomp)
             self.assertRoundTripPickle(decomp)
             self.assertEqual(
@@ -238,33 +241,41 @@ class CheckDecompositions(QiskitTestCase):
                 0,
                 "Incorrect saved unitary in the decomposition.",
             )
-            self.assertIsInstance(decomp, expected_specialization, "Incorrect Weyl specialization.")
+            self.assertEqual(
+                decomp._inner_decomposition.specialization,
+                expected_specialization,
+                "Incorrect Weyl specialization.",
+            )
             circ = decomp.circuit(simplify=True)
             self.assertDictEqual(
-                dict(circ.count_ops()), expected_gates, f"Gate counts of {decomposer.__name__}"
+                dict(circ.count_ops()), expected_gates, f"Gate counts of {decomp_name}"
             )
             actual_fid = decomp.actual_fidelity()
             self.assertAlmostEqual(decomp.calculated_fidelity, actual_fid, places=13)
-            self.assertGreaterEqual(actual_fid, fidelity, f"fidelity of {decomposer.__name__}")
+            self.assertGreaterEqual(actual_fid, fidelity, f"fidelity of {decomp_name}")
             actual_unitary = Operator(circ).data
             trace = np.trace(actual_unitary.T.conj() @ target_unitary)
-            self.assertAlmostEqual(
-                trace.imag, 0, places=13, msg=f"Real trace for {decomposer.__name__}"
-            )
+            self.assertAlmostEqual(trace.imag, 0, places=13, msg=f"Real trace for {decomp_name}")
         with self.assertDebugOnly():
-            decomp2 = expected_specialization(target_unitary, fidelity=None)  # Shouldn't raise
+            decomp2 = TwoQubitWeylDecomposition(
+                target_unitary, fidelity=None, _specialization=expected_specialization
+            )  # Shouldn't raise
         self.assertRoundTrip(decomp2)
         self.assertRoundTripPickle(decomp2)
-        if expected_specialization is not TwoQubitWeylGeneral:
+        if expected_specialization != Specialization.General:
             with self.assertRaises(QiskitError) as exc:
-                _ = expected_specialization(target_unitary, fidelity=1.0)
-            self.assertIn("worse than requested", exc.exception.message)
+                _ = TwoQubitWeylDecomposition(
+                    target_unitary, fidelity=1.0, _specialization=expected_specialization
+                )
+            self.assertIn("worse than requested", str(exc.exception))
 
     def check_exact_decomposition(
         self, target_unitary, decomposer, tolerance=1.0e-12, num_basis_uses=None
     ):
         """Check exact decomposition for a particular target"""
         decomp_circuit = decomposer(target_unitary, _num_basis_uses=num_basis_uses)
+        if isinstance(decomp_circuit, DAGCircuit):
+            decomp_circuit = dag_to_circuit(decomp_circuit)
         if num_basis_uses is not None:
             self.assertEqual(num_basis_uses, decomp_circuit.count_ops().get("unitary", 0))
         decomp_unitary = Operator(decomp_circuit).data
@@ -828,7 +839,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylIdEquiv,
+                    Specialization.IdEquiv,
                     {"rz": 4, "ry": 2},
                 )
 
@@ -842,7 +853,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylSWAPEquiv,
+                    Specialization.SWAPEquiv,
                     {"rz": 4, "ry": 2, "swap": 1},
                 )
 
@@ -856,7 +867,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylSWAPEquiv,
+                    Specialization.SWAPEquiv,
                     {"rz": 4, "ry": 2, "swap": 1},
                 )
 
@@ -870,7 +881,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylPartialSWAPEquiv,
+                    Specialization.PartialSWAPEquiv,
                     {"rz": 6, "ry": 3, "rxx": 1, "ryy": 1, "rzz": 1},
                 )
 
@@ -884,7 +895,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylPartialSWAPFlipEquiv,
+                    Specialization.PartialSWAPFlipEquiv,
                     {"rz": 6, "ry": 3, "rxx": 1, "ryy": 1, "rzz": 1},
                 )
 
@@ -898,7 +909,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylfSimaabEquiv,
+                    Specialization.fSimaabEquiv,
                     {"rz": 7, "ry": 4, "rxx": 1, "ryy": 1, "rzz": 1},
                 )
 
@@ -912,7 +923,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylfSimabbEquiv,
+                    Specialization.fSimabbEquiv,
                     {"rx": 7, "ry": 4, "rxx": 1, "ryy": 1, "rzz": 1},
                 )
 
@@ -926,7 +937,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylfSimabmbEquiv,
+                    Specialization.fSimabmbEquiv,
                     {"rx": 7, "ry": 4, "rxx": 1, "ryy": 1, "rzz": 1},
                 )
 
@@ -940,7 +951,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylControlledEquiv,
+                    Specialization.ControlledEquiv,
                     {"rx": 6, "ry": 4, "rxx": 1},
                 )
 
@@ -954,7 +965,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylMirrorControlledEquiv,
+                    Specialization.MirrorControlledEquiv,
                     {"rz": 6, "ry": 4, "rzz": 1, "swap": 1},
                 )
 
@@ -968,7 +979,7 @@ class TestTwoQubitWeylDecompositionSpecialization(CheckDecompositions):
                 self.check_two_qubit_weyl_specialization(
                     k1 @ Ud(a + da, b + db, c + dc) @ k2,
                     0.999,
-                    TwoQubitWeylGeneral,
+                    Specialization.General,
                     {"rz": 8, "ry": 4, "rxx": 1, "ryy": 1, "rzz": 1},
                 )
 
@@ -1227,6 +1238,57 @@ class TestTwoQubitDecompose(CheckDecompositions):
             requested_basis = set(oneq_gates + [kak_gate_name])
             self.assertTrue(decomposition_basis.issubset(requested_basis))
 
+    @combine(
+        seed=range(10),
+        euler_bases=[
+            ("U321", ["u3", "u2", "u1"]),
+            ("U3", ["u3"]),
+            ("U", ["u"]),
+            ("U1X", ["u1", "rx"]),
+            ("RR", ["r"]),
+            ("PSX", ["p", "sx"]),
+            ("ZYZ", ["rz", "ry"]),
+            ("ZXZ", ["rz", "rx"]),
+            ("XYX", ["rx", "ry"]),
+            ("ZSX", ["rz", "sx"]),
+            ("ZSXX", ["rz", "sx", "x"]),
+        ],
+        kak_gates=[
+            (CXGate(), "cx"),
+            (CZGate(), "cz"),
+            (iSwapGate(), "iswap"),
+            (RXXGate(np.pi / 2), "rxx"),
+        ],
+        name="test_euler_basis_selection_{seed}_{euler_bases[0]}_{kak_gates[1]}",
+    )
+    def test_use_dag(self, euler_bases, kak_gates, seed):
+        """Test the use_dag flag returns a correct dagcircuit with various target bases."""
+        (euler_basis, oneq_gates) = euler_bases
+        (kak_gate, kak_gate_name) = kak_gates
+        with self.subTest(euler_basis=euler_basis, kak_gate=kak_gate):
+            decomposer = TwoQubitBasisDecomposer(kak_gate, euler_basis=euler_basis)
+            unitary = random_unitary(4, seed=seed)
+            self.assertIsInstance(decomposer(unitary, use_dag=True), DAGCircuit)
+            self.check_exact_decomposition(unitary.data, decomposer)
+            decomposition_basis = set(decomposer(unitary).count_ops())
+            requested_basis = set(oneq_gates + [kak_gate_name])
+            self.assertTrue(decomposition_basis.issubset(requested_basis))
+
+    def test_non_std_gate(self):
+        """Test that the TwoQubitBasisDecomposer class can be correctly instantiated with a
+        non-standard KAK gate.
+
+        Reproduce from: https://github.com/Qiskit/qiskit/issues/12998
+        """
+        # note that `CXGate(ctrl_state=0)` is not handled as a "standard" gate.
+        decomposer = TwoQubitBasisDecomposer(CXGate(ctrl_state=0))
+        unitary = SwapGate().to_matrix()
+        decomposed_unitary = decomposer(unitary)
+        self.assertEqual(Operator(unitary), Operator(decomposed_unitary))
+        self.assertNotIn("swap", decomposed_unitary.count_ops())
+        self.assertNotIn("cx", decomposed_unitary.count_ops())
+        self.assertEqual(3, decomposed_unitary.count_ops()["cx_o0"])
+
 
 @ddt
 class TestPulseOptimalDecompose(CheckDecompositions):
@@ -1368,7 +1430,7 @@ class TestTwoQubitControlledUDecompose(CheckDecompositions):
     def test_correct_unitary(self, seed):
         """Verify unitary for different gates in the decomposition"""
         unitary = random_unitary(4, seed=seed)
-        for gate in [RXXGate, RYYGate, RZZGate, RZXGate, CPhaseGate, CRZGate]:
+        for gate in [RXXGate, RYYGate, RZZGate, RZXGate, CPhaseGate, CRZGate, CRXGate, CRYGate]:
             decomposer = TwoQubitControlledUDecomposer(gate)
             circ = decomposer(unitary)
             self.assertEqual(Operator(unitary), Operator(circ))
@@ -1381,6 +1443,88 @@ class TestTwoQubitControlledUDecompose(CheckDecompositions):
         self.assertIn(
             "Equivalent gate needs to take exactly 1 angle parameter.", exc.exception.message
         )
+
+    @combine(seed=range(10), name="seed_{seed}")
+    def test_correct_unitary_custom_gate(self, seed):
+        """Test synthesis with a custom controlled u equivalent gate."""
+        unitary = random_unitary(4, seed=seed)
+
+        class CustomXXGate(RXXGate):
+            """Custom RXXGate subclass that's not a standard gate"""
+
+            _standard_gate = None
+
+            def __init__(self, theta, label=None):
+                super().__init__(theta, label)
+                self.name = "MyCustomXXGate"
+
+        decomposer = TwoQubitControlledUDecomposer(CustomXXGate)
+        circ = decomposer(unitary)
+        self.assertEqual(Operator(unitary), Operator(circ))
+
+    def test_unitary_custom_gate_raises(self):
+        """Test that a custom gate raises an exception, as it's not equivalent to an RXX gate"""
+
+        class CustomXYGate(Gate):
+            """Custom Gate subclass that's not a standard gate and not RXX equivalent"""
+
+            _standard_gate = None
+
+            def __init__(self, theta: ParameterValueType, label=None):
+                """Create new custom rotstion XY gate."""
+                super().__init__("MyCustomXYGate", 2, [theta])
+
+            def __array__(self, dtype=None):
+                """Return a Numpy.array for the custom gate."""
+                theta = self.params[0]
+                cos = math.cos(theta)
+                isin = 1j * math.sin(theta)
+                return np.array(
+                    [[1, 0, 0, 0], [0, cos, -isin, 0], [0, -isin, cos, 0], [0, 0, 0, 1]],
+                    dtype=dtype,
+                )
+
+            def inverse(self, annotated: bool = False):
+                return CustomXYGate(-self.params[0])
+
+        with self.assertRaisesRegex(QiskitError, "ControlledEquiv calculated fidelity"):
+            TwoQubitControlledUDecomposer(CustomXYGate)
+
+    @combine(seed=range(10), name="seed_{seed}")
+    def test_correct_unitary_custom_rxx_equiv_gate(self, seed):
+        """Test synthesis with a custom controlled u equivalent gate."""
+
+        class CustomRZZeqGate(Gate):
+            """Custom Gate subclass that's not a standard gate"""
+
+            _standard_gate = None
+
+            def __init__(self, theta: ParameterValueType, invert=False, label=None):
+                """Create new custom rotstion XY gate."""
+                super().__init__("MyCustomRZZeqGate", 2, [theta, invert], label)
+
+            def __array__(self, dtype=None):
+                """Return a Numpy.array for the custom gate: h(0) rzz(0,1) h(1)"""
+                theta = self.params[0]
+                a = np.exp(-1j * theta / 2.0) / 2.0
+                b = np.exp(1j * theta / 2.0) / 2.0
+                c = -np.exp(-1j * theta / 2.0) / 2.0
+                d = -np.exp(1j * theta / 2.0) / 2.0
+
+                if self.params[1]:
+                    mat = [[b, a, b, a], [b, c, b, c], [a, b, c, d], [a, d, c, b]]
+                else:
+                    mat = [[a, a, b, b], [b, d, a, c], [a, a, d, d], [b, d, c, a]]
+
+                return np.array(mat, dtype=dtype)
+
+            def inverse(self, annotated: bool = False):
+                return CustomRZZeqGate(self.params[0], not self.params[1])
+
+        unitary = random_unitary(4, seed=seed)
+        decomposer = TwoQubitControlledUDecomposer(CustomRZZeqGate)
+        circ = decomposer(unitary)
+        self.assertEqual(Operator(unitary), Operator(circ))
 
 
 class TestDecomposeProductRaises(QiskitTestCase):
@@ -1629,149 +1773,23 @@ class TestQuantumShannonDecomposer(QiskitTestCase):
 class TestTwoQubitDecomposeUpToDiagonal(QiskitTestCase):
     """test TwoQubitDecomposeUpToDiagonal class"""
 
-    def test_prop31(self):
-        """test proposition III.1: no CNOTs needed"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        # test identity
-        mat = np.identity(4)
-        self.assertTrue(dec._cx0_test(mat))
-
-        sz = np.array([[1, 0], [0, -1]])
-        zz = np.kron(sz, sz)
-        self.assertTrue(dec._cx0_test(zz))
-
-        had = np.matrix([[1, 1], [1, -1]]) / np.sqrt(2)
-        hh = np.kron(had, had)
-        self.assertTrue(dec._cx0_test(hh))
-
-        sy = np.array([[0, -1j], [1j, 0]])
-        hy = np.kron(had, sy)
-        self.assertTrue(dec._cx0_test(hy))
-
-        qc = QuantumCircuit(2)
-        qc.cx(0, 1)
-        self.assertFalse(dec._cx0_test(Operator(qc).data))
-
-    def test_prop32_true(self):
-        """test proposition III.2: 1 CNOT sufficient"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        qc = QuantumCircuit(2)
-        qc.ry(np.pi / 4, 0)
-        qc.ry(np.pi / 3, 1)
-        qc.cx(0, 1)
-        qc.ry(np.pi / 4, 0)
-        qc.y(1)
-        mat = Operator(qc).data
-        self.assertTrue(dec._cx1_test(mat))
-
-        qc = QuantumCircuit(2)
-        qc.ry(np.pi / 5, 0)
-        qc.ry(np.pi / 3, 1)
-        qc.cx(1, 0)
-        qc.ry(np.pi / 2, 0)
-        qc.y(1)
-        mat = Operator(qc).data
-        self.assertTrue(dec._cx1_test(mat))
-
-        # this SU4 is non-local
-        mat = scipy.stats.unitary_group.rvs(4, random_state=84)
-        self.assertFalse(dec._cx1_test(mat))
-
-    def test_prop32_false(self):
-        """test proposition III.2: 1 CNOT not sufficient"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        qc = QuantumCircuit(2)
-        qc.ry(np.pi / 4, 0)
-        qc.ry(np.pi / 3, 1)
-        qc.cx(0, 1)
-        qc.ry(np.pi / 4, 0)
-        qc.y(1)
-        qc.cx(0, 1)
-        qc.ry(np.pi / 3, 0)
-        qc.rx(np.pi / 2, 1)
-        mat = Operator(qc).data
-        self.assertFalse(dec._cx1_test(mat))
-
-    def test_prop33_true(self):
-        """test proposition III.3: 2 CNOT sufficient"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        qc = QuantumCircuit(2)
-        qc.rx(np.pi / 4, 0)
-        qc.ry(np.pi / 2, 1)
-        qc.cx(0, 1)
-        qc.rx(np.pi / 4, 0)
-        qc.ry(np.pi / 2, 1)
-        qc.cx(0, 1)
-        qc.rx(np.pi / 4, 0)
-        qc.y(1)
-        mat = Operator(qc).data
-        self.assertTrue(dec._cx2_test(mat))
-
-    def test_prop33_false(self):
-        """test whether circuit which requires 3 cx fails 2 cx test"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        qc = QuantumCircuit(2)
-        qc.u(0.1, 0.2, 0.3, 0)
-        qc.u(0.4, 0.5, 0.6, 1)
-        qc.cx(0, 1)
-        qc.u(0.1, 0.2, 0.3, 0)
-        qc.u(0.4, 0.5, 0.6, 1)
-        qc.cx(0, 1)
-        qc.u(0.5, 0.2, 0.3, 0)
-        qc.u(0.2, 0.4, 0.1, 1)
-        qc.cx(1, 0)
-        qc.u(0.1, 0.2, 0.3, 0)
-        qc.u(0.4, 0.5, 0.6, 1)
-        mat = Operator(qc).data
-        self.assertFalse(dec._cx2_test(mat))
-
-    def test_ortho_local_map(self):
-        """test map of SO4 to SU2⊗SU2"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        emap = np.array([[1, 1j, 0, 0], [0, 0, 1j, 1], [0, 0, 1j, -1], [1, -1j, 0, 0]]) / math.sqrt(
-            2
-        )
-        so4 = scipy.stats.ortho_group.rvs(4, random_state=284)
-        sy = np.array([[0, -1j], [1j, 0]])
-        self.assertTrue(np.allclose(-np.kron(sy, sy), emap @ emap.T))
-        self.assertFalse(dec._cx0_test(so4))
-        self.assertTrue(dec._cx0_test(emap @ so4 @ emap.T.conj()))
-
-    def test_ortho_local_map2(self):
-        """test map of SO4 to SU2⊗SU2"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        emap = np.array([[1, 0, 0, 1j], [0, 1j, 1, 0], [0, 1j, -1, 0], [1, 0, 0, -1j]]) / math.sqrt(
-            2
-        )
-        so4 = scipy.stats.ortho_group.rvs(4, random_state=284)
-        sy = np.array([[0, -1j], [1j, 0]])
-        self.assertTrue(np.allclose(-np.kron(sy, sy), emap @ emap.T))
-        self.assertFalse(dec._cx0_test(so4))
-        self.assertTrue(dec._cx0_test(emap @ so4 @ emap.T.conj()))
-
-    def test_real_trace_transform(self):
-        """test finding diagonal factor of unitary"""
-        dec = TwoQubitDecomposeUpToDiagonal()
-        u4 = scipy.stats.unitary_group.rvs(4, random_state=83)
-        su4, _ = dec._u4_to_su4(u4)
-        real_map = dec._real_trace_transform(su4)
-        self.assertTrue(dec._cx2_test(real_map @ su4))
-
     def test_call_decompose(self):
         """
         test __call__ method to decompose
         """
-        dec = TwoQubitDecomposeUpToDiagonal()
+        dec = two_qubit_decompose_up_to_diagonal
         u4 = scipy.stats.unitary_group.rvs(4, random_state=47)
-        dmat, circ2cx = dec(u4)
+        dmat, circ2cx_data = dec(u4)
+        circ2cx = QuantumCircuit._from_circuit_data(circ2cx_data)
         dec_diag = dmat @ Operator(circ2cx).data
         self.assertTrue(Operator(u4) == Operator(dec_diag))
 
     def test_circuit_decompose(self):
         """test applying decomposed gates as circuit elements"""
-        dec = TwoQubitDecomposeUpToDiagonal()
+        dec = two_qubit_decompose_up_to_diagonal
         u4 = scipy.stats.unitary_group.rvs(4, random_state=47)
-        dmat, circ2cx = dec(u4)
+        dmat, circ2cx_data = dec(u4)
+        circ2cx = QuantumCircuit._from_circuit_data(circ2cx_data)
 
         qc1 = QuantumCircuit(2)
         qc1.append(UnitaryGate(u4), range(2))

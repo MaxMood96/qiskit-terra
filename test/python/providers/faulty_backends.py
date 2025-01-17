@@ -12,7 +12,7 @@
 
 """Faulty fake backends for testing"""
 
-from qiskit.providers.models import BackendProperties
+from qiskit.providers.models.backendproperties import BackendProperties
 from qiskit.providers.fake_provider import Fake7QPulseV1
 
 
@@ -31,6 +31,18 @@ class Fake7QV1FaultyQ1(Fake7QPulseV1):
         props["qubits"][1].append(
             {"date": "2000-01-01 00:00:00Z", "name": "operational", "unit": "", "value": 0}
         )
+        return BackendProperties.from_dict(props)
+
+
+class Fake7QV1MissingQ1Property(Fake7QPulseV1):
+    """A fake 7 qubit backend, with a missing T1 property in q1."""
+
+    def properties(self):
+        """Returns a snapshot of device properties as recorded on 8/30/19.
+        Remove property from qubit 1.
+        """
+        props = super().properties().to_dict()
+        props["qubits"][1] = filter(lambda q: q["name"] != "T1", props["qubits"][1])
         return BackendProperties.from_dict(props)
 
 

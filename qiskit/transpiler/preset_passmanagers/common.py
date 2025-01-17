@@ -24,9 +24,9 @@ from qiskit.transpiler.passmanager import PassManager
 from qiskit.transpiler.passes import Error
 from qiskit.transpiler.passes import BasisTranslator
 from qiskit.transpiler.passes import Unroll3qOrMore
-from qiskit.transpiler.passes import Collect2qBlocks
-from qiskit.transpiler.passes import Collect1qRuns
 from qiskit.transpiler.passes import ConsolidateBlocks
+from qiskit.transpiler.passes import Collect1qRuns
+from qiskit.transpiler.passes import Collect2qBlocks
 from qiskit.transpiler.passes import UnitarySynthesis
 from qiskit.transpiler.passes import HighLevelSynthesis
 from qiskit.transpiler.passes import CheckMap
@@ -52,6 +52,7 @@ from qiskit.transpiler.passes.layout.vf2_layout import VF2LayoutStopReason
 from qiskit.transpiler.passes.layout.vf2_post_layout import VF2PostLayoutStopReason
 from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.transpiler.layout import Layout
+from qiskit.utils.deprecate_pulse import deprecate_pulse_arg
 
 
 _ControlFlowState = collections.namedtuple("_ControlFlowState", ("working", "not_working"))
@@ -86,9 +87,12 @@ class _InvalidControlFlowForBackend:
     def __init__(self, basis_gates=(), target=None):
         if target is not None:
             self.unsupported = [op for op in CONTROL_FLOW_OP_NAMES if op not in target]
-        else:
-            basis_gates = set(basis_gates) if basis_gates is not None else set()
+        elif basis_gates is not None:
+            basis_gates = set(basis_gates)
             self.unsupported = [op for op in CONTROL_FLOW_OP_NAMES if op not in basis_gates]
+        else:
+            # Pass manager without basis gates or target; assume everything's valid.
+            self.unsupported = []
 
     def message(self, property_set):
         """Create an error message for the given property set."""
@@ -184,6 +188,7 @@ def generate_unroll_3q(
     unitary_synthesis_method="default",
     unitary_synthesis_plugin_config=None,
     hls_config=None,
+    qubits_initially_zero=True,
 ):
     """Generate an unroll >3q :class:`~qiskit.transpiler.PassManager`
 
@@ -199,8 +204,10 @@ def generate_unroll_3q(
             configuration, this is plugin specific refer to the specified plugin's
             documentation for how to use.
         hls_config (HLSConfig): An optional configuration class to use for
-                :class:`~qiskit.transpiler.passes.HighLevelSynthesis` pass.
-                Specifies how to synthesize various high-level objects.
+            :class:`~qiskit.transpiler.passes.HighLevelSynthesis` pass.
+            Specifies how to synthesize various high-level objects.
+        qubits_initially_zero (bool): Indicates whether the input circuit is
+            zero-initialized.
 
     Returns:
         PassManager: The unroll 3q or more pass manager
@@ -225,6 +232,7 @@ def generate_unroll_3q(
             equivalence_library=sel,
             basis_gates=basis_gates,
             min_qubits=3,
+            qubits_initially_zero=qubits_initially_zero,
         )
     )
     # If there are no target instructions revert to using unroll3qormore so
@@ -273,7 +281,7 @@ def generate_routing_passmanager(
     coupling_map=None,
     vf2_call_limit=None,
     backend_properties=None,
-    seed_transpiler=None,
+    seed_transpiler=-1,
     check_trivial=False,
     use_barrier_before_measurement=True,
     vf2_max_trials=None,
@@ -292,7 +300,10 @@ def generate_routing_passmanager(
         backend_properties (BackendProperties): Properties of a backend to
             synthesize for (e.g. gate fidelities).
         seed_transpiler (int): Sets random seed for the stochastic parts of
-            the transpiler.
+            the transpiler. This is currently only used for :class:`.VF2PostLayout` and the
+            default value of ``-1`` is strongly recommended (which is no randomization).
+            If a value of ``None`` is provided this will seed from system
+            entropy.
         check_trivial (bool): If set to true this will condition running the
             :class:`~.VF2PostLayout` pass after routing on whether a trivial
             layout was tried and was found to not be perfect. This is only
@@ -350,7 +361,7 @@ def generate_routing_passmanager(
                     target,
                     coupling_map,
                     backend_properties,
-                    seed_transpiler,
+                    seed=seed_transpiler,
                     call_limit=vf2_call_limit,
                     max_trials=vf2_max_trials,
                     strict_direction=False,
@@ -361,10 +372,7 @@ def generate_routing_passmanager(
         routing.append(ConditionalController(ApplyLayout(), condition=_apply_post_layout_condition))
 
     def filter_fn(node):
-        return (
-            getattr(node.op, "label", None)
-            != "qiskit.transpiler.internal.routing.protection.barrier"
-        )
+        return node.label != "qiskit.transpiler.internal.routing.protection.barrier"
 
     routing.append([FilterOpNodes(filter_fn)])
 
@@ -414,6 +422,7 @@ def generate_translation_passmanager(
     unitary_synthesis_method="default",
     unitary_synthesis_plugin_config=None,
     hls_config=None,
+    qubits_initially_zero=True,
 ):
     """Generate a basis translation :class:`~qiskit.transpiler.PassManager`
 
@@ -439,6 +448,8 @@ def generate_translation_passmanager(
         hls_config (HLSConfig): An optional configuration class to use for
             :class:`~qiskit.transpiler.passes.HighLevelSynthesis` pass.
             Specifies how to synthesize various high-level objects.
+        qubits_initially_zero (bool): Indicates whether the input circuit is
+            zero-initialized.
 
     Returns:
         PassManager: The basis translation pass manager
@@ -466,6 +477,7 @@ def generate_translation_passmanager(
                 use_qubit_indices=True,
                 equivalence_library=sel,
                 basis_gates=basis_gates,
+                qubits_initially_zero=qubits_initially_zero,
             ),
             BasisTranslator(sel, basis_gates, target),
         ]
@@ -490,6 +502,7 @@ def generate_translation_passmanager(
                 use_qubit_indices=True,
                 basis_gates=basis_gates,
                 min_qubits=3,
+                qubits_initially_zero=qubits_initially_zero,
             ),
             Unroll3qOrMore(target=target, basis_gates=basis_gates),
             Collect2qBlocks(),
@@ -512,13 +525,15 @@ def generate_translation_passmanager(
                 target=target,
                 use_qubit_indices=True,
                 basis_gates=basis_gates,
+                qubits_initially_zero=qubits_initially_zero,
             ),
         ]
     else:
-        raise TranspilerError("Invalid translation method %s." % method)
+        raise TranspilerError(f"Invalid translation method {method}.")
     return PassManager(unroll)
 
 
+@deprecate_pulse_arg("inst_map", predicate=lambda inst_map: inst_map is not None)
 def generate_scheduling(
     instruction_durations, scheduling_method, timing_constraints, inst_map, target=None
 ):
@@ -530,7 +545,7 @@ def generate_scheduling(
             ``'asap'``/``'as_soon_as_possible'`` or
             ``'alap'``/``'as_late_as_possible'``
         timing_constraints (TimingConstraints): Hardware time alignment restrictions.
-        inst_map (InstructionScheduleMap): Mapping object that maps gate to schedule.
+        inst_map (InstructionScheduleMap): DEPRECATED. Mapping object that maps gate to schedule.
         target (Target): The :class:`~.Target` object representing the backend
 
     Returns:
@@ -554,7 +569,7 @@ def generate_scheduling(
         try:
             scheduling.append(scheduler[scheduling_method](instruction_durations, target=target))
         except KeyError as ex:
-            raise TranspilerError("Invalid scheduling method %s." % scheduling_method) from ex
+            raise TranspilerError(f"Invalid scheduling method {scheduling_method}.") from ex
     elif instruction_durations:
         # No scheduling. But do unit conversion for delays.
         def _contains_delay(property_set):
@@ -581,6 +596,7 @@ def generate_scheduling(
             InstructionDurationCheck(
                 acquire_alignment=timing_constraints.acquire_alignment,
                 pulse_alignment=timing_constraints.pulse_alignment,
+                target=target,
             )
         )
         scheduling.append(
@@ -588,6 +604,7 @@ def generate_scheduling(
                 ConstrainedReschedule(
                     acquire_alignment=timing_constraints.acquire_alignment,
                     pulse_alignment=timing_constraints.pulse_alignment,
+                    target=target,
                 ),
                 condition=_require_alignment,
             )
@@ -596,6 +613,7 @@ def generate_scheduling(
             ValidatePulseGates(
                 granularity=timing_constraints.granularity,
                 min_length=timing_constraints.min_length,
+                target=target,
             )
         )
     if scheduling_method:
@@ -621,15 +639,10 @@ def get_vf2_limits(
     """
     limits = VF2Limits(None, None)
     if layout_method is None and initial_layout is None:
-        if optimization_level == 1:
+        if optimization_level in {1, 2}:
             limits = VF2Limits(
                 int(5e4),  # Set call limit to ~100ms with rustworkx 0.10.2
                 2500,  # Limits layout scoring to < 600ms on ~400 qubit devices
-            )
-        elif optimization_level == 2:
-            limits = VF2Limits(
-                int(5e6),  # Set call limit to ~10 sec with rustworkx 0.10.2
-                25000,  # Limits layout scoring to < 6 sec on ~400 qubit devices
             )
         elif optimization_level == 3:
             limits = VF2Limits(

@@ -39,11 +39,12 @@ import multiprocessing as mp
 import sys
 import warnings
 from collections.abc import Callable, Iterable
-from typing import List, Tuple, Union, Dict, Any
+from typing import List, Tuple, Union, Dict, Any, Sequence
 
 import numpy as np
 import rustworkx as rx
 
+from qiskit.circuit import ParameterVector
 from qiskit.circuit.parameter import Parameter
 from qiskit.circuit.parameterexpression import ParameterExpression, ParameterValueType
 from qiskit.pulse.channels import Channel
@@ -52,6 +53,8 @@ from qiskit.pulse.instructions import Instruction, Reference
 from qiskit.pulse.utils import instruction_duration_validation
 from qiskit.pulse.reference_manager import ReferenceManager
 from qiskit.utils.multiprocessing import is_main_process
+from qiskit.utils import deprecate_arg
+from qiskit.utils.deprecate_pulse import deprecate_pulse_func
 
 
 Interval = Tuple[int, int]
@@ -77,21 +80,31 @@ class Schedule:
 
     - Appending an instruction to the end of a channel
 
-      .. code-block:: python
+      .. plot::
+         :include-source:
+         :nofigs:
+         :context: reset
 
+          from qiskit.pulse import Schedule, Gaussian, DriveChannel, Play
           sched = Schedule()
           sched += Play(Gaussian(160, 0.1, 40), DriveChannel(0))
 
     - Appending an instruction shifted in time by a given amount
 
-      .. code-block:: python
+      .. plot::
+         :include-source:
+         :nofigs:
+         :context:
 
           sched = Schedule()
           sched += Play(Gaussian(160, 0.1, 40), DriveChannel(0)) << 30
 
     - Merge two schedules
 
-      .. code-block:: python
+      .. plot::
+         :include-source:
+         :nofigs:
+         :context:
 
           sched1 = Schedule()
           sched1 += Play(Gaussian(160, 0.1, 40), DriveChannel(0))
@@ -118,6 +131,7 @@ class Schedule:
     # Counter to count instance number.
     instances_counter = itertools.count()
 
+    @deprecate_pulse_func
     def __init__(
         self,
         *schedules: "ScheduleComponent" | tuple[int, "ScheduleComponent"],
@@ -250,7 +264,7 @@ class Schedule:
 
         Notes:
             Nested schedules are returned as-is. If you want to collect only instructions,
-            use py:meth:`~Schedule.instructions` instead.
+            use :py:meth:`~Schedule.instructions` instead.
 
         Returns:
             A tuple, where each element is a two-tuple containing the initial
@@ -488,7 +502,7 @@ class Schedule:
     ) -> "Schedule":
         """Return a ``Schedule`` with only the instructions from this Schedule *failing*
         at least one of the provided filters.
-        This method is the complement of py:meth:`~self.filter`, so that::
+        This method is the complement of :py:meth:`~Schedule.filter`, so that::
 
             self.filter(args) | self.exclude(args) == self
 
@@ -551,17 +565,10 @@ class Schedule:
                     self._timeslots[channel].insert(index, interval)
                 except PulseError as ex:
                     raise PulseError(
-                        "Schedule(name='{new}') cannot be inserted into Schedule(name='{old}') at "
-                        "time {time} because its instruction on channel {ch} scheduled from time "
-                        "{t0} to {tf} overlaps with an existing instruction."
-                        "".format(
-                            new=schedule.name or "",
-                            old=self.name or "",
-                            time=time,
-                            ch=channel,
-                            t0=interval[0],
-                            tf=interval[1],
-                        )
+                        f"Schedule(name='{schedule.name or ''}') cannot be inserted into "
+                        f"Schedule(name='{self.name or ''}') at "
+                        f"time {time} because its instruction on channel {channel} scheduled from time "
+                        f"{interval[0]} to {interval[1]} overlaps with an existing instruction."
                     ) from ex
 
         _check_nonnegative_timeslot(self._timeslots)
@@ -596,10 +603,8 @@ class Schedule:
                         continue
 
                 raise PulseError(
-                    "Cannot find interval ({t0}, {tf}) to remove from "
-                    "channel {ch} in Schedule(name='{name}').".format(
-                        ch=channel, t0=interval[0], tf=interval[1], name=schedule.name
-                    )
+                    f"Cannot find interval ({interval[0]}, {interval[1]}) to remove from "
+                    f"channel {channel} in Schedule(name='{schedule.name}')."
                 )
 
             if not channel_timeslots:
@@ -633,7 +638,10 @@ class Schedule:
 
         The replacement matching is based on an instruction equality check.
 
-        .. code-block::
+        .. plot::
+           :include-source:
+           :nofigs:
+           :context: reset
 
             from qiskit import pulse
 
@@ -652,15 +660,16 @@ class Schedule:
 
         Only matches at the top-level of the schedule tree. If you wish to
         perform this replacement over all instructions in the schedule tree.
-        Flatten the schedule prior to running::
+        Flatten the schedule prior to running:
 
-        .. code-block::
+        .. plot::
+           :include-source:
+           :nofigs:
+           :context:
 
             sched = pulse.Schedule()
 
             sched += pulse.Schedule(old)
-
-            sched = sched.flatten()
 
             sched = sched.replace(old, new)
 
@@ -711,13 +720,19 @@ class Schedule:
         return self._parameter_manager.is_parameterized()
 
     def assign_parameters(
-        self, value_dict: dict[ParameterExpression, ParameterValueType], inplace: bool = True
+        self,
+        value_dict: dict[
+            ParameterExpression | ParameterVector | str,
+            ParameterValueType | Sequence[ParameterValueType],
+        ],
+        inplace: bool = True,
     ) -> "Schedule":
         """Assign the parameters in this schedule according to the input.
 
         Args:
-            value_dict: A mapping from Parameters to either numeric values or another
-                Parameter expression.
+            value_dict: A mapping from parameters or parameter names (parameter vector
+            or parameter vector name) to either numeric values (list of numeric values)
+            or another parameter expression (list of parameter expressions).
             inplace: Set ``True`` to override this instance with new parameter.
 
         Returns:
@@ -884,7 +899,10 @@ class ScheduleBlock:
     reference key "grand_child".  You can call a subroutine without specifying
     a substantial program.
 
-    .. code-block::
+    .. plot::
+       :include-source:
+       :nofigs:
+       :context: reset
 
         from qiskit import pulse
         from qiskit.circuit.parameter import Parameter
@@ -900,14 +918,11 @@ class ScheduleBlock:
                 pulse.reference("grand_child")
                 pulse.play(pulse.Constant(200, amp2), pulse.DriveChannel(0))
 
-    Now you assign the inner pulse program to this reference.
-
-    .. code-block::
-
-        sched_outer.assign_references({("grand_child", ): sched_inner})
+        # Now assign the inner pulse program to this reference
+        sched_outer.assign_references({("grand_child",): sched_inner})
         print(sched_outer.parameters)
 
-    .. parsed-literal::
+    .. code-block:: text
 
        {Parameter(amp1), Parameter(amp2)}
 
@@ -917,11 +932,14 @@ class ScheduleBlock:
     The program calling the "grand_child" has a reference program description
     which is accessed through :attr:`ScheduleBlock.references`.
 
-    .. code-block::
+    .. plot::
+       :include-source:
+       :nofigs:
+       :context:
 
         print(sched_outer.references)
 
-    .. parsed-literal::
+    .. code-block:: text
 
        ReferenceManager:
          - ('grand_child',): ScheduleBlock(Play(Constant(duration=100, amp=amp1,...
@@ -930,7 +948,10 @@ class ScheduleBlock:
     Here we try a different approach to define subroutine. Namely, we call
     a subroutine from the root program with the actual program ``sched2``.
 
-    .. code-block::
+    .. plot::
+       :include-source:
+       :nofigs:
+       :context:
 
         amp3 = Parameter("amp3")
 
@@ -940,7 +961,7 @@ class ScheduleBlock:
 
         print(main.parameters)
 
-    .. parsed-literal::
+    .. code-block:: text
 
        {Parameter(amp1), Parameter(amp2), Parameter(amp3}
 
@@ -949,11 +970,14 @@ class ScheduleBlock:
 
     Note that the root program is only aware of its direct references.
 
-    .. code-block::
+    .. plot::
+       :include-source:
+       :nofigs:
+       :context:
 
         print(main.references)
 
-    .. parsed-literal::
+    .. code-block:: text
 
        ReferenceManager:
          - ('child',): ScheduleBlock(ScheduleBlock(ScheduleBlock(Play(Con...
@@ -963,7 +987,10 @@ class ScheduleBlock:
     However, the returned :class:`.ReferenceManager` is a dict-like object, and you can still
     reach to "grand_child" via the "child" program with the following chained dict access.
 
-    .. code-block::
+    .. plot::
+       :include-source:
+       :nofigs:
+       :context:
 
         main.references[("child", )].references[("grand_child", )]
 
@@ -987,6 +1014,7 @@ class ScheduleBlock:
     # Counter to count instance number.
     instances_counter = itertools.count()
 
+    @deprecate_pulse_func
     def __init__(
         self, name: str | None = None, metadata: dict | None = None, alignment_context=None
     ):
@@ -1301,7 +1329,7 @@ class ScheduleBlock:
     ):
         """Return a new ``ScheduleBlock`` with only the instructions from this ``ScheduleBlock``
         *failing* at least one of the provided filters.
-        This method is the complement of py:meth:`~self.filter`, so that::
+        This method is the complement of :py:meth:`~ScheduleBlock.filter`, so that::
 
             self.filter(args) + self.exclude(args) == self in terms of instructions included.
 
@@ -1408,14 +1436,18 @@ class ScheduleBlock:
 
     def assign_parameters(
         self,
-        value_dict: dict[ParameterExpression, ParameterValueType],
+        value_dict: dict[
+            ParameterExpression | ParameterVector | str,
+            ParameterValueType | Sequence[ParameterValueType],
+        ],
         inplace: bool = True,
     ) -> "ScheduleBlock":
         """Assign the parameters in this schedule according to the input.
 
         Args:
-            value_dict: A mapping from Parameters to either numeric values or another
-                Parameter expression.
+            value_dict: A mapping from parameters or parameter names (parameter vector
+            or parameter vector name) to either numeric values (list of numeric values)
+            or another parameter expression (list of parameter expressions).
             inplace: Set ``True`` to override this instance with new parameter.
 
         Returns:
@@ -1452,11 +1484,14 @@ class ScheduleBlock:
         which are directly referred within the current scope.
         Let's see following example:
 
-        .. code-block:: python
+        .. plot::
+           :include-source:
+           :nofigs:
+           :context: reset
 
             from qiskit import pulse
 
-            with pulse.build() as subroutine:
+            with pulse.build() as nested_prog:
                 pulse.delay(10, pulse.DriveChannel(0))
 
             with pulse.build() as sub_prog:
@@ -1477,17 +1512,38 @@ class ScheduleBlock:
         you must first assign "A" of the ``sub_prog``,
         and then assign the ``sub_prog`` to the ``main_prog``.
 
-        .. code-block:: python
+        .. plot::
+           :include-source:
+           :nofigs:
+           :context:
 
             sub_prog.assign_references({("A", ): nested_prog}, inplace=True)
             main_prog.assign_references({("B", ): sub_prog}, inplace=True)
 
         Alternatively, you can also write
 
-        .. code-block:: python
+        .. plot::
+           :nofigs:
+           :context: reset
+
+            # This code is hidden from readers
+            # It resets the variables so the following code example runs correctly
+            from qiskit import pulse
+            with pulse.build() as nested_prog:
+                pulse.delay(10, pulse.DriveChannel(0))
+            with pulse.build() as sub_prog:
+                pulse.reference("A")
+            with pulse.build() as main_prog:
+                pulse.reference("B")
+
+
+        .. plot::
+           :include-source:
+           :nofigs:
+           :context:
 
             main_prog.assign_references({("B", ): sub_prog}, inplace=True)
-            main_prog.references[("B", )].assign_references({"A": nested_prog}, inplace=True)
+            main_prog.references[("B", )].assign_references({("A", ): nested_prog}, inplace=True)
 
         Here :attr:`.references` returns a dict-like object, and you can
         mutably update the nested reference of the particular subroutine.
@@ -1528,7 +1584,9 @@ class ScheduleBlock:
         because these different objects are identified by their unique uuid.
         For example,
 
-        .. code-block:: python
+        .. plot::
+           :include-source:
+           :nofigs:
 
             from qiskit import pulse, circuit
 
@@ -1603,8 +1661,9 @@ class ScheduleBlock:
         blocks = ", ".join([repr(instr) for instr in self.blocks[:50]])
         if len(self.blocks) > 25:
             blocks += ", ..."
-        return '{}({}, name="{}", transform={})'.format(
-            self.__class__.__name__, blocks, name, repr(self.alignment_context)
+        return (
+            f'{self.__class__.__name__}({blocks}, name="{name}",'
+            f" transform={repr(self.alignment_context)})"
         )
 
     def __add__(self, other: "BlockComponent") -> "ScheduleBlock":
@@ -1634,6 +1693,7 @@ def _common_method(*classes):
     return decorator
 
 
+@deprecate_arg("show_barriers", new_alias="plot_barriers", since="1.1.0", pending=True)
 @_common_method(Schedule, ScheduleBlock)
 def draw(
     self,
@@ -1645,9 +1705,10 @@ def draw(
     show_snapshot: bool = True,
     show_framechange: bool = True,
     show_waveform_info: bool = True,
-    show_barrier: bool = True,
+    plot_barrier: bool = True,
     plotter: str = "mpl2d",
     axis: Any | None = None,
+    show_barrier: bool = True,
 ):
     """Plot the schedule.
 
@@ -1659,16 +1720,16 @@ def draw(
             preset stylesheets.
         backend (Optional[BaseBackend]): Backend object to play the input pulse program.
             If provided, the plotter may use to make the visualization hardware aware.
-        time_range: Set horizontal axis limit. Tuple `(tmin, tmax)`.
-        time_unit: The unit of specified time range either `dt` or `ns`.
-            The unit of `ns` is available only when `backend` object is provided.
+        time_range: Set horizontal axis limit. Tuple ``(tmin, tmax)``.
+        time_unit: The unit of specified time range either ``dt`` or ``ns``.
+            The unit of `ns` is available only when ``backend`` object is provided.
         disable_channels: A control property to show specific pulse channel.
             Pulse channel instances provided as a list are not shown in the output image.
         show_snapshot: Show snapshot instructions.
         show_framechange: Show frame change instructions. The frame change represents
             instructions that modulate phase or frequency of pulse channels.
         show_waveform_info: Show additional information about waveforms such as their name.
-        show_barrier: Show barrier lines.
+        plot_barrier: Show barrier lines.
         plotter: Name of plotter API to generate an output image.
             One of following APIs should be specified::
 
@@ -1681,6 +1742,7 @@ def draw(
             the plotters use a given ``axis`` instead of internally initializing
             a figure object. This object format depends on the plotter.
             See plotter argument for details.
+        show_barrier: DEPRECATED. Show barrier lines.
 
     Returns:
         Visualization output data.
@@ -1690,6 +1752,7 @@ def draw(
     # pylint: disable=cyclic-import
     from qiskit.visualization import pulse_drawer
 
+    del show_barrier
     return pulse_drawer(
         program=self,
         style=style,
@@ -1700,7 +1763,7 @@ def draw(
         show_snapshot=show_snapshot,
         show_framechange=show_framechange,
         show_waveform_info=show_waveform_info,
-        show_barrier=show_barrier,
+        plot_barrier=plot_barrier,
         plotter=plotter,
         axis=axis,
     )

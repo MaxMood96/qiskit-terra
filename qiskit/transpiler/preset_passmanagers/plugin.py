@@ -68,7 +68,15 @@ load external plugins via corresponding entry points.
        connectivity constraints of the target backend. This does not necessarily
        need to match the directionality of the edges in the target as a later
        stage typically will adjust directional gates to match that constraint
-       (but there is no penalty for doing that in the ``routing`` stage).
+       (but there is no penalty for doing that in the ``routing`` stage). The output
+       of this stage is also expected to have the ``final_layout`` property set field
+       set with a :class:`~.Layout` object that maps the :class:`.Qubit` to the
+       output final position of that qubit in the circuit. If there is an
+       existing ``final_layout`` entry in the property set (such as might be set
+       by an optimization pass that introduces a permutation) it is expected
+       that the final layout will be the composition of the two layouts (this
+       can be computed using :meth:`.DAGCircuit.compose`, for example:
+       ``second_final_layout.compose(first_final_layout, dag.qubits)``).
    * - ``translation``
      - ``qiskit.transpiler.translation``
      - ``translator``, ``synthesis``, ``unroller``
@@ -137,7 +145,7 @@ subclass as a setuptools entry point in the package metadata. This can be done
 an ``entry-points`` table in ``pyproject.toml`` for the plugin package with the necessary entry
 points under the appropriate namespace for the stage your plugin is for. You can see the list of
 stages, entry points, and expectations from the stage in :ref:`stage_table`.  For example,
-continuing from the example plugin above::
+continuing from the example plugin above:
 
 .. code-block:: toml
 
@@ -306,7 +314,9 @@ def passmanager_stage_plugins(stage: str) -> Dict[str, PassManagerStagePlugin]:
 
     This function is useful for getting more information about a plugin:
 
-    .. code-block:: python
+    .. plot::
+       :include-source:
+       :nofigs:
 
         from qiskit.transpiler.preset_passmanagers.plugin import passmanager_stage_plugins
         routing_plugins = passmanager_stage_plugins('routing')

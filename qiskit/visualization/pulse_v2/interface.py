@@ -27,8 +27,12 @@ from qiskit.pulse.channels import Channel
 from qiskit.visualization.exceptions import VisualizationError
 from qiskit.visualization.pulse_v2 import core, device_info, stylesheet, types
 from qiskit.exceptions import MissingOptionalLibraryError
+from qiskit.utils import deprecate_arg
+from qiskit.utils.deprecate_pulse import deprecate_pulse_dependency
 
 
+@deprecate_pulse_dependency(moving_to_dynamics=True)
+@deprecate_arg("show_barrier", new_alias="plot_barrier", since="1.1.0", pending=True)
 def draw(
     program: Union[Waveform, SymbolicPulse, Schedule, ScheduleBlock],
     style: Optional[Dict[str, Any]] = None,
@@ -39,9 +43,10 @@ def draw(
     show_snapshot: bool = True,
     show_framechange: bool = True,
     show_waveform_info: bool = True,
-    show_barrier: bool = True,
+    plot_barrier: bool = True,
     plotter: str = types.Plotter.Mpl2D.value,
     axis: Optional[Any] = None,
+    show_barrier: bool = True,
 ):
     """Generate visualization data for pulse programs.
 
@@ -66,7 +71,7 @@ def draw(
             instructions that modulate phase or frequency of pulse channels.
         show_waveform_info: Show waveform annotations, i.e. name, of waveforms.
             Set ``True`` to show additional information about waveforms.
-        show_barrier: Show barrier lines.
+        plot_barrier: Show barrier lines.
         plotter: Name of plotter API to generate an output image.
             One of following APIs should be specified::
 
@@ -79,6 +84,7 @@ def draw(
             the plotters use a given ``axis`` instead of internally initializing
             a figure object. This object format depends on the plotter.
             See plotter argument for details.
+        show_barrier: DEPRECATED. Show barrier lines.
 
     Returns:
         Visualization output data.
@@ -300,12 +306,13 @@ def draw(
 
     Examples:
         To visualize a pulse program, you can call this function with set of
-        control arguments. Most of appearance of the output image can be controlled by the
+        control arguments. Most of the appearance of the output image can be controlled by the
         stylesheet.
 
         Drawing with the default stylesheet.
 
         .. plot::
+           :alt: Output from the previous code.
            :include-source:
 
             from qiskit import QuantumCircuit, transpile, schedule
@@ -324,6 +331,7 @@ def draw(
         Drawing with the stylesheet suited for publication.
 
         .. plot::
+           :alt: Output from the previous code.
            :include-source:
 
             from qiskit import QuantumCircuit, transpile, schedule
@@ -342,6 +350,7 @@ def draw(
         Drawing with the stylesheet suited for program debugging.
 
         .. plot::
+           :alt: Output from the previous code.
            :include-source:
 
             from qiskit import QuantumCircuit, transpile, schedule
@@ -359,7 +368,9 @@ def draw(
 
         You can partially customize a preset stylesheet when initializing it.
 
-        .. code-block:: python
+        .. plot::
+           :include-source:
+           :nofigs:
 
             my_style = {
                 'formatter.channel_scaling.drive': 5,
@@ -379,6 +390,7 @@ def draw(
         MissingOptionalLibraryError: When required visualization package is not installed.
         VisualizationError: When invalid plotter API or invalid time range is specified.
     """
+    del show_barrier
     temp_style = stylesheet.QiskitPulseStyle()
     temp_style.update(style or stylesheet.IQXStandard())
 
@@ -425,7 +437,7 @@ def draw(
         canvas.set_disable_type(types.LabelType.PULSE_NAME, remove=True)
 
     # show barrier
-    if not show_barrier:
+    if not plot_barrier:
         canvas.set_disable_type(types.LineType.BARRIER, remove=True)
 
     canvas.update()
