@@ -44,3 +44,4 @@ Sphinx>=6.0,<7.2
 # TODO: switch to stable release when 4.1 is released
 reno @ git+https://github.com/openstack/reno.git@85b9a9bb52c8f9ce4a5e66fa8d9eba7fde90bf6d
 sphinxcontrib-katex==0.9.9
+setuptools>=78.1.1 # not directly required, pinned by Snyk to avoid a vulnerability
